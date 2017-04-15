@@ -1,9 +1,5 @@
 from kik import KikError
-from kik.messages import TextMessage, SuggestedResponseKeyboard, TextResponse
-
-
-BUTTON_REQUEST = 'Get more feels'
-BUTTON_ADMIN = 'Send feels'
+from kik.messages import TextMessage, SuggestedResponseKeyboard
 
 
 class MessageQueue:
@@ -12,12 +8,13 @@ class MessageQueue:
         self.kik = kik
         self.queue = {}
 
-    def add_message(self, to, body, chat_id=None):
+    def add_message(self, to, body, chat_id=None, keyboards=None):
         """
         ???
         :param to:
         :param body:
         :param chat_id:
+        :param keyboards:
         :return:
         """
         if chat_id is not None:
@@ -32,15 +29,8 @@ class MessageQueue:
                 body=body
             )
 
-        # Original version raised error if non-recipient and non-admin user contacted.
-        # That is not correct, because we do have a default reply for these cases.
-        # Additionally, admin user who is also recipient will get both keyboards - useful for testing.
-        keyboards = []
-        if to == self.config['recipient']:
-            keyboards += keyboard_recipient()
-        if to == self.config['admin']:
-            keyboards += keyboard_admin()
-        build_keyboard(message, to, keyboards)
+        if keyboards is not None:
+            self._build_keyboard(message, to, keyboards)
 
         try:
             self.queue[to].append(message)
@@ -98,8 +88,40 @@ class MessageQueue:
 
         return 200
 
+    @staticmethod
+    def _build_keyboard(message, to, responses):
+        """
+        Build the keyboard for the provided message with the specified responses.
+        :param message: The message to have the responses added to it.
+        :param to: The recipient of the message.
+        :param responses: An array with Kik keyboard responses.
+        :return: Nothing (message object directly modified to include the keyboard)
+        """
+        if len(responses) > 0:
+            message.keyboards.append(
+                SuggestedResponseKeyboard(
+                    to=to,
+                    hidden=False,
+                    responses=responses
+                )
+            )
+
 
 def error_handler(message_queue, e, queue, count, sending):
+    """
+    Error handler called in the event of problems sending the message batch.
+
+    The aim being to log as many details of the surrounding circumstances, not just the error itself - this will only be
+    called if the Kik API or the Kik servers reject the bundle of messages, which could mean a malformed message or
+    server error. So, if this happens, we need to have the context of the call, not just the error.
+
+    :param message_queue:
+    :param e:
+    :param queue:
+    :param count:
+    :param sending:
+    :return:
+    """
     print("Error encountered during message sending.")
     print("Sending list length: {}".format(len(sending)))
     print("Queue: {}".format(queue))
@@ -114,37 +136,3 @@ def error_handler(message_queue, e, queue, count, sending):
         print("Admin notification sent.")
     except KikError:
         print("Admin notify failed.")
-
-
-def build_keyboard(message, to, responses):
-    """
-    Build the keyboard for the provided message with the specified responses.
-    :param message: The message to have the responses added to it.
-    :param to: The recipient of the message.
-    :param responses: An array with Kik keyboard responses.
-    :return: Nothing (message object directly modified to include the keyboard)
-    """
-    if len(responses) > 0:
-        message.keyboards.append(
-            SuggestedResponseKeyboard(
-                to=to,
-                hidden=False,
-                responses=responses
-            )
-        )
-
-
-def keyboard_admin():
-    """
-    Create keyboard responses that are sent to an admin user.
-    :return: An array with the responses that should be sent on the present message.
-    """
-    return [TextResponse(BUTTON_ADMIN)]
-
-
-def keyboard_recipient():
-    """
-    Create keyboard responses that are sent to a message recipient.
-    :return: An array with the responses that should be sent on the present message.
-    """
-    return [TextResponse(BUTTON_REQUEST)]

@@ -4,20 +4,12 @@ from flask import Flask, request, Response
 from kik import KikApi, Configuration
 from kik.messages import messages_from_json, TextMessage
 
+from .database import Database, FeelsTable
 from .message_queue import MessageQueue
 from .parser import MessageParser
-from .util import bool_from_string
 
 
-NOTIFY_SOURCES = {
-    'unknown': 'Unknown trigger source:',
-    'twitter': 'Triggered by lack of twitter:',
-    'push': 'Triggered by Zapier push:',
-    'admin': 'Triggered by admin request:',
-    'recipient': 'Triggered by recipient request:',
-    'manual': 'Manual message sent:',
-    'schedule': 'Triggered as scheduled:'
-}
+print("Begin server / WSGI initialisation")
 
 config = {}
 app = Flask(__name__)
@@ -38,6 +30,8 @@ def init_app(path):
     with open(path) as config_file:
         config = json.load(config_file)
 
+    Database.init_database(config)
+
     kik = KikApi(config['bot_username'], config['bot_api_key'])
     kik.set_configuration(Configuration(webhook=config['webhook']))
     queue = MessageQueue(config, kik)
@@ -48,13 +42,20 @@ def init_app(path):
 
 @app.route('/')
 def hello_world():
-    return 'Hello Developer World!'
+    with FeelsTable() as table:
+        return "Hello Developer World!\n" \
+               "<p>Total feels: {}</p>\n" \
+               "<p>Awaiting approval: {}</p>" \
+               "<p>Blocked: {}</p>".format(
+                    table.count_all(),
+                    table.count_need_approval(),
+                    table.count_blocked())
 
 
 @app.route('/incoming', methods=['POST'])
 def incoming():
     if not kik.verify_signature(request.headers.get('X-Kik-Signature'), request.get_data()):
-        return Response(status=403)
+        return Response(status=403, response="Unable to verify message signature.")
 
     messages = messages_from_json(request.json['messages'])
 
@@ -73,34 +74,49 @@ def incoming():
 
 
 @app.route('/message', methods=['POST'])
-def from_zapier():
+def zapier_trigger():
     try:
         auth = request.authorization
         if auth.username != config['webhook_user'] or auth.password != config['webhook_pass']:
-            return Response(status=403)
+            return Response(status=403, response="Invalid user name or password.")
     except AttributeError:
-        return Response(status=401)
-
-    post = request.form
-    body_message = post['message']
-    no_feel = bool_from_string(post['noFeels'])
+        return Response(status=401, response="Authorization required.")
 
     try:
-        source = post['source']
-        body_notify = NOTIFY_SOURCES[source]
+        source = request.form['source']
     except KeyError:
-        body_notify = NOTIFY_SOURCES['unknown']
+        source = 'unknown'
 
-    if not no_feel:
-        feel = u"\n\n{}\n\u00A0  \u2015{} ({})".format(post['feelsComment'], post['from'], post['feelsDate'])
-        body_message += feel
-        body_notify += feel
-
-    queue.add_message(to=config['admin'], body=body_notify)
-    queue.add_message(to=config['recipient'], body=body_message)
+    parser.queue_feel(source)
 
     # As above, note the function call to send_all().
     return Response(status=queue.send_all())
+
+
+@app.route('/new-feel', methods=['POST'])
+def zapier_new_feel():
+    try:
+        auth = request.authorization
+        if auth.username != config['webhook_user'] or auth.password != config['webhook_pass']:
+            return Response(status=403, response="Invalid user name or password.")
+    except AttributeError:
+        return Response(status=401, response="Authorization required.")
+
+    post = request.form
+
+    try:
+        submitted = post['submitted']
+        name = post['name']
+        comment = post['comment']
+    except KeyError:
+        return Response(status=400,
+                        response="Expected post data for 'submitted', 'name' and 'comment' but POST request did not "
+                                 "contain one or more of these.")
+
+    with FeelsTable() as table:
+        table.insert_feel(submitted, name, comment)
+
+    return Response(status=200, response="New feel added and awaiting approval.")
 
 
 # =================================================================================================================
