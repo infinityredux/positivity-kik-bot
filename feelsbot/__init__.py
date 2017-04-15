@@ -1,1 +1,1 @@
-from .feelsbot import app
+from .server import init_app
